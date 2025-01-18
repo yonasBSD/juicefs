@@ -94,6 +94,17 @@ var (
 
 	userGroupCache = make(map[string]map[string][]string) // name -> (user -> groups)
 
+	MaxDeletes = meta.RmrDefaultThreads
+	caller     = CALLER_JAVA
+)
+
+const (
+	CALLER_JAVA = iota
+	CALLER_PYTHON
+)
+
+const (
+	BEHAVIOR_HADOOP = "Hadoop"
 )
 
 const (
@@ -210,7 +221,9 @@ func jfs_set_logger(cb unsafe.Pointer) {
 func (w *wrapper) withPid(pid int64) meta.Context {
 	// mapping Java Thread ID to global one
 	ctx := meta.NewContext(w.ctx.Pid()*1000+uint32(pid), w.ctx.Uid(), w.ctx.Gids())
-	ctx.WithValue(meta.CtxKey("behavior"), "Hadoop")
+	if caller == CALLER_JAVA {
+		ctx.WithValue(meta.CtxKey("behavior"), BEHAVIOR_HADOOP)
+	}
 	return ctx
 }
 
@@ -336,6 +349,7 @@ type javaConf struct {
 	PushAuth          string `json:"pushAuth"`
 	PushLabels        string `json:"pushLabels"`
 	PushGraphite      string `json:"pushGraphite"`
+	Caller            int    `json:"caller"`
 }
 
 func getOrCreate(name, user, group, superuser, supergroup string, f func() *fs.FileSystem) int64 {
@@ -465,6 +479,11 @@ func jfs_init(cname, jsonConf, user, group, superuser, supergroup *C.char) int64
 			}
 		} else {
 			utils.SetLogLevel(logrus.WarnLevel)
+		}
+
+		caller = jConf.Caller
+		if jConf.MaxDeletes > 0 {
+			MaxDeletes = jConf.MaxDeletes
 		}
 
 		metaConf := meta.DefaultConf()
@@ -865,7 +884,7 @@ func jfs_rmr(pid int64, h int64, cpath *C.char) int32 {
 	if w == nil {
 		return EINVAL
 	}
-	return errno(w.Rmr(w.withPid(pid), C.GoString(cpath)))
+	return errno(w.Rmr(w.withPid(pid), C.GoString(cpath), MaxDeletes))
 }
 
 //export jfs_rename
