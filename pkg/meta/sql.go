@@ -3289,26 +3289,23 @@ func (m *dbMeta) scanPendingFiles(ctx Context, scan pendingFileScan) error {
 	}
 
 	var dfs []delfile
-	err := m.simpleTxn(ctx, func(s *xorm.Session) error {
+	if err := m.simpleTxn(ctx, func(s *xorm.Session) error {
 		if ok, err := s.IsTableExist(&delfile{}); err != nil {
 			return err
 		} else if !ok {
 			return nil
 		}
 		return s.Find(&dfs)
-	})
-	if err != nil {
+	}); err != nil {
 		return err
 	}
+
 	for _, ds := range dfs {
-		clean, err := scan(ds.Inode, ds.Length, ds.Expire)
-		if err != nil {
+		if _, err := scan(ds.Inode, ds.Length, ds.Expire); err != nil {
 			return err
 		}
-		if clean {
-			m.doDeleteFileData(ds.Inode, ds.Length)
-		}
 	}
+
 	return nil
 }
 
@@ -3526,11 +3523,12 @@ func (m *dbMeta) doLoadQuotas(ctx Context) (map[Ino]*Quota, error) {
 	return quotas, nil
 }
 
-func (m *dbMeta) doFlushQuotas(ctx Context, quotas map[Ino]*Quota) error {
+func (m *dbMeta) doFlushQuotas(ctx Context, quotas []*iQuota) error {
+	sort.Slice(quotas, func(i, j int) bool { return quotas[i].inode < quotas[j].inode })
 	return m.txn(func(s *xorm.Session) error {
-		for ino, q := range quotas {
+		for _, q := range quotas {
 			_, err := s.Exec("update jfs_dir_quota set used_space=used_space+?, used_inodes=used_inodes+? where inode=?",
-				q.newSpace, q.newInodes, ino)
+				q.quota.newSpace, q.quota.newInodes, q.inode)
 			if err != nil {
 				return err
 			}

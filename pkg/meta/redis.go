@@ -3352,12 +3352,13 @@ func (m *redisMeta) scanPendingFiles(ctx Context, scan pendingFileScan) error {
 	visited := make(map[Ino]bool)
 	start := int64(0)
 	const batchSize = 1000
+
 	for {
 		pairs, err := m.rdb.ZRangeWithScores(Background(), m.delfiles(), start, start+batchSize).Result()
 		if err != nil {
 			return err
 		}
-		start += batchSize
+
 		for _, p := range pairs {
 			v := p.Member.(string)
 			ps := strings.Split(v, ":")
@@ -3370,18 +3371,17 @@ func (m *redisMeta) scanPendingFiles(ctx Context, scan pendingFileScan) error {
 			}
 			visited[Ino(inode)] = true
 			size, _ := strconv.ParseUint(ps[1], 10, 64)
-			clean, err := scan(Ino(inode), size, int64(p.Score))
-			if err != nil {
+			if _, err := scan(Ino(inode), size, int64(p.Score)); err != nil {
 				return err
 			}
-			if clean {
-				m.doDeleteFileData_(Ino(inode), size, v)
-			}
 		}
+
+		start += batchSize
 		if len(pairs) < batchSize {
 			break
 		}
 	}
+
 	return nil
 }
 
@@ -3594,12 +3594,12 @@ func (m *redisMeta) doLoadQuotas(ctx Context) (map[Ino]*Quota, error) {
 	})
 }
 
-func (m *redisMeta) doFlushQuotas(ctx Context, quotas map[Ino]*Quota) error {
+func (m *redisMeta) doFlushQuotas(ctx Context, quotas []*iQuota) error {
 	_, err := m.rdb.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-		for ino, q := range quotas {
-			field := ino.String()
-			pipe.HIncrBy(ctx, m.dirQuotaUsedSpaceKey(), field, q.newSpace)
-			pipe.HIncrBy(ctx, m.dirQuotaUsedInodesKey(), field, q.newInodes)
+		for _, q := range quotas {
+			field := q.inode.String()
+			pipe.HIncrBy(ctx, m.dirQuotaUsedSpaceKey(), field, q.quota.newSpace)
+			pipe.HIncrBy(ctx, m.dirQuotaUsedInodesKey(), field, q.quota.newInodes)
 		}
 		return nil
 	})
