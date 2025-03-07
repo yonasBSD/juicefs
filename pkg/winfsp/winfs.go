@@ -374,6 +374,18 @@ func attrToStat(inode Ino, attr *meta.Attr, stat *fuse.Stat_t) {
 	stat.Size = int64(size)
 	stat.Blocks = int64(blocks)
 	stat.Rdev = uint64(rdev)
+	if attr.Flags&meta.FlagImmutable != 0 {
+		stat.Flags |= fuse.UF_READONLY
+	}
+	if attr.Flags&meta.FlagWindowsHidden != 0 {
+		stat.Flags |= fuse.UF_HIDDEN
+	}
+	if attr.Flags&meta.FlagWindowsSystem != 0 {
+		stat.Flags |= fuse.UF_SYSTEM
+	}
+	if attr.Flags&meta.FlagWindowsArchive != 0 {
+		stat.Flags |= fuse.UF_ARCHIVE
+	}
 }
 
 func (j *juice) h2i(fh *uint64) meta.Ino {
@@ -641,6 +653,39 @@ func (j *juice) Releasedir(path string, fh uint64) (e int) {
 	return
 }
 
+func (j *juice) Chflags(path string, flags uint32) (e int) {
+	defer trace(path, flags)(&e)
+
+	ctx := j.newContext()
+	fi, err := j.fs.Stat(ctx, path)
+	if err != 0 {
+		e = -fuse.ENOENT
+		return
+	}
+
+	var flagSet uint8
+	if flags&fuse.UF_READONLY != 0 {
+		flagSet |= meta.FlagImmutable
+	}
+	if flags&fuse.UF_HIDDEN != 0 {
+		flagSet |= meta.FlagWindowsHidden
+	}
+	if flags&fuse.UF_SYSTEM != 0 {
+		flagSet |= meta.FlagWindowsSystem
+	}
+	if flags&fuse.UF_ARCHIVE != 0 {
+		flagSet |= meta.FlagWindowsArchive
+	}
+
+	ino := fi.Inode()
+	err = j.vfs.ChFlags(ctx, ino, flagSet)
+	if err != 0 {
+		e = -int(err)
+	}
+
+	return
+}
+
 func Serve(v *vfs.VFS, fuseOpt string, fileCacheTo float64, asRoot bool, delayClose int, showDotFiles bool) {
 	var jfs juice
 	conf := v.Conf
@@ -656,8 +701,7 @@ func Serve(v *vfs.VFS, fuseOpt string, fileCacheTo float64, asRoot bool, delayCl
 	host := fuse.NewFileSystemHost(&jfs)
 	jfs.host = host
 	var options = "volname=" + conf.Format.Name
-	// create_umask 022 results in 755 for directories and 644 for files, see https://github.com/winfsp/sshfs-win/issues/14
-	options += ",ExactFileSystemName=JuiceFS,create_umask=022,ThreadCount=16"
+	options += ",ExactFileSystemName=JuiceFS,ThreadCount=16"
 	options += ",DirInfoTimeout=1000,VolumeInfoTimeout=1000,KeepFileCache"
 	options += fmt.Sprintf(",FileInfoTimeout=%d", int(fileCacheTo*1000))
 	options += ",VolumePrefix=/juicefs/" + conf.Format.Name
