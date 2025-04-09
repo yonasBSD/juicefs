@@ -1561,8 +1561,10 @@ func (m *kvMeta) doRename(ctx Context, parentSrc Ino, nameSrc string, parentDst 
 		dbuf := tx.get(m.entryKey(parentDst, nameDst))
 		if dbuf == nil && m.conf.CaseInsensi {
 			if e := m.resolveCase(ctx, parentDst, nameDst); e != nil {
-				nameDst = string(e.Name)
-				dbuf = m.packEntry(e.Attr.Typ, e.Inode)
+				if string(e.Name) != nameSrc || parentDst != parentSrc {
+					nameDst = string(e.Name)
+					dbuf = m.packEntry(e.Attr.Typ, e.Inode)
+				}
 			}
 		}
 		var supdate, dupdate bool
@@ -2670,19 +2672,20 @@ func (m *kvMeta) ListXattr(ctx Context, inode Ino, names *[]byte) syscall.Errno 
 func (m *kvMeta) doSetXattr(ctx Context, inode Ino, name string, value []byte, flags uint32) syscall.Errno {
 	key := m.xattrKey(inode, name)
 	return errno(m.txn(ctx, func(tx *kvTxn) error {
+		v := tx.get(key)
 		switch flags {
 		case XattrCreate:
-			v := tx.get(key)
 			if v != nil {
 				return syscall.EEXIST
 			}
 		case XattrReplace:
-			v := tx.get(key)
 			if v == nil {
 				return ENOATTR
 			}
 		}
-		tx.set(key, value)
+		if !bytes.Equal(v, value) {
+			tx.set(key, value)
+		}
 		return nil
 	}))
 }

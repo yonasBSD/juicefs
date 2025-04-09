@@ -2085,10 +2085,12 @@ func (m *dbMeta) doRename(ctx Context, parentSrc Ino, nameSrc string, parentDst 
 		}
 		if !ok && m.conf.CaseInsensi {
 			if e := m.resolveCase(ctx, parentSrc, nameSrc); e != nil {
-				ok = true
-				se.Inode = e.Inode
-				se.Type = e.Attr.Typ
-				se.Name = e.Name
+				if string(e.Name) != nameSrc || parentSrc != parentDst {
+					ok = true
+					se.Inode = e.Inode
+					se.Type = e.Attr.Typ
+					se.Name = e.Name
+				}
 			}
 		}
 		if !ok {
@@ -2132,10 +2134,12 @@ func (m *dbMeta) doRename(ctx Context, parentSrc Ino, nameSrc string, parentDst 
 		}
 		if !ok && m.conf.CaseInsensi {
 			if e := m.resolveCase(ctx, parentDst, nameDst); e != nil {
-				ok = true
-				de.Inode = e.Inode
-				de.Type = e.Attr.Typ
-				de.Name = e.Name
+				if string(e.Name) != nameSrc || parentSrc != parentDst {
+					ok = true
+					de.Inode = e.Inode
+					de.Type = e.Attr.Typ
+					de.Name = e.Name
+				}
 			}
 		}
 		var supdate, dupdate bool
@@ -3509,6 +3513,7 @@ func (m *dbMeta) doSetXattr(ctx Context, inode Ino, name string, value []byte, f
 		if err != nil {
 			return err
 		}
+		existing := k.Value
 		k.Value = nil
 		switch flags {
 		case XattrCreate:
@@ -3522,6 +3527,9 @@ func (m *dbMeta) doSetXattr(ctx Context, inode Ino, name string, value []byte, f
 			}
 			_, err = s.Update(&x, k)
 		default:
+			if bytes.Equal(existing, value) {
+				return nil
+			}
 			if ok {
 				_, err = s.Update(&x, k)
 			} else {
@@ -3846,23 +3854,22 @@ func (m *dbMeta) dumpDir(s *xorm.Session, inode Ino, tree *DumpedEntry, bw *bufi
 		conds[c] = sync.NewCond(&ms[c])
 		if c < len(entries) {
 			go func(c int) {
-				_ = m.roTxn(Background(), func(s *xorm.Session) error {
-					for i := c; i < len(entries) && err == nil; i += threads {
-						e := entries[i]
-						er := m.dumpEntry(s, e.Attr.Inode, 0, e, showProgress)
-						ms[c].Lock()
-						ready[c] = true
-						if er != nil {
-							err = er
-						}
-						conds[c].Signal()
-						for ready[c] && err == nil {
-							conds[c].Wait()
-						}
-						ms[c].Unlock()
+				for i := c; i < len(entries) && err == nil; i += threads {
+					e := entries[i]
+					er := m.roTxn(Background(), func(s *xorm.Session) error {
+						return m.dumpEntry(s, e.Attr.Inode, 0, e, showProgress)
+					})
+					ms[c].Lock()
+					ready[c] = true
+					if er != nil {
+						err = er
 					}
-					return nil
-				})
+					conds[c].Signal()
+					for ready[c] && err == nil {
+						conds[c].Wait()
+					}
+					ms[c].Unlock()
+				}
 			}(c)
 		}
 	}

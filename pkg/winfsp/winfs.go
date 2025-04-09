@@ -727,7 +727,46 @@ func (j *juice) Chflags(path string, flags uint32) (e int) {
 	return
 }
 
-func Serve(v *vfs.VFS, fuseOpt string, fileCacheTo float64, asRoot bool, delayClose int, showDotFiles bool) {
+func (j *juice) Getpath(p string, fh uint64) (e int, ret string) {
+	defer trace(p, fh)(&e, &ret)
+	ino := j.h2i(&fh)
+	ctx := j.newContext()
+	if ino == 0 {
+		fi, err := j.fs.Stat(ctx, p)
+		if err != 0 {
+			e = errorconv(err)
+			return
+		}
+		ino = fi.Inode()
+	}
+
+	paths := j.vfs.Meta.GetPaths(ctx, ino)
+	if len(paths) == 0 {
+		ret = p
+		return
+	}
+
+	if len(paths) == 1 {
+		ret = paths[0]
+		return
+	}
+
+	retCandidicate := paths[0]
+
+	for _, path := range paths {
+		if p == path {
+			ret = path
+			return
+		} else if strings.EqualFold(path, p) {
+			retCandidicate = path
+		}
+	}
+
+	ret = retCandidicate
+	return
+}
+
+func Serve(v *vfs.VFS, fuseOpt string, fileCacheTimeoutSec float64, dirCacheTimeoutSec float64, asRoot bool, delayCloseSec int, showDotFiles bool, threadsCount int, caseSensitive bool) {
 	var jfs juice
 	conf := v.Conf
 	jfs.conf = conf
@@ -738,13 +777,13 @@ func Serve(v *vfs.VFS, fuseOpt string, fileCacheTo float64, asRoot bool, delayCl
 		logger.Fatalf("Initialize FileSystem failed: %s", err)
 	}
 	jfs.asRoot = asRoot
-	jfs.delayClose = delayClose
+	jfs.delayClose = delayCloseSec
 	host := fuse.NewFileSystemHost(&jfs)
 	jfs.host = host
 	var options = "volname=" + conf.Format.Name
-	options += ",ExactFileSystemName=JuiceFS,ThreadCount=16"
-	options += ",DirInfoTimeout=1000,VolumeInfoTimeout=1000,KeepFileCache"
-	options += fmt.Sprintf(",FileInfoTimeout=%d", int(fileCacheTo*1000))
+	options += fmt.Sprintf(",ExactFileSystemName=JuiceFS,ThreadCount=%d", threadsCount)
+	options += fmt.Sprintf(",DirInfoTimeout=%d,VolumeInfoTimeout=1000,KeepFileCache", int(dirCacheTimeoutSec*1000))
+	options += fmt.Sprintf(",FileInfoTimeout=%d", int(fileCacheTimeoutSec*1000))
 	options += ",VolumePrefix=/juicefs/" + conf.Format.Name
 	if asRoot {
 		options += ",uid=-1,gid=-1"
@@ -755,7 +794,7 @@ func Serve(v *vfs.VFS, fuseOpt string, fileCacheTo float64, asRoot bool, delayCl
 	if !showDotFiles {
 		options += ",dothidden"
 	}
-	host.SetCapCaseInsensitive(strings.HasSuffix(conf.Meta.MountPoint, ":"))
+	host.SetCapCaseInsensitive(!caseSensitive)
 	host.SetCapReaddirPlus(true)
 	logger.Debugf("mount point: %s, options: %s", conf.Meta.MountPoint, options)
 	_ = host.Mount(conf.Meta.MountPoint, []string{"-o", options})
