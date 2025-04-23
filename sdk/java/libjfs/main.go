@@ -94,6 +94,8 @@ var (
 
 	userGroupCache = make(map[string]map[string][]string) // name -> (user -> groups)
 
+	formats = make(map[string]*meta.Format)
+
 	MaxDeletes = meta.RmrDefaultThreads
 	caller     = CALLER_JAVA
 )
@@ -506,6 +508,7 @@ func jfs_init(cname, jsonConf, user, group, superuser, supergroup *C.char) int64
 			logger.Errorf("load setting: %s", err)
 			return nil
 		}
+		formats[name] = format
 		var registerer prometheus.Registerer
 		if jConf.PushGateway != "" || jConf.PushGraphite != "" {
 			commonLabels := prometheus.Labels{"vol_name": name, "mp": "sdk-" + strconv.Itoa(os.Getpid())}
@@ -722,17 +725,21 @@ func jfs_update_uid_grouping(cname, uidstr *C.char, grouping *C.char) {
 }
 
 //export jfs_getGroups
-func jfs_getGroups(name, user string) string {
+func jfs_getGroups(cname, cuser *C.char, buf uintptr, count int32) int32 {
+	name := C.GoString(cname)
+	user := C.GoString(cuser)
 	fslock.Lock()
-	defer fslock.Unlock()
 	userGroups := userGroupCache[name]
+	fslock.Unlock()
+	var gStr string
 	if userGroups != nil {
 		gs := userGroups[user]
 		if gs != nil {
-			return strings.Join(gs, ",")
+			gStr = strings.Join(gs, ",")
 		}
 	}
-	return ""
+	copy(toBuf(buf, count), gStr)
+	return int32(len(gStr))
 }
 
 //export jfs_term
@@ -1802,6 +1809,24 @@ func jfs_fsync(pid int64, fd int32) int32 {
 	filesLock.Unlock()
 
 	return errno(f.Fsync(f.w.withPid(pid)))
+}
+
+//export jfs_ranger_cfg
+func jfs_ranger_cfg(cname *C.char, buf uintptr, count int32) int32 {
+	name := C.GoString(cname)
+	fslock.Lock()
+	format := formats[name]
+	fslock.Unlock()
+	var cfg string
+	if format != nil {
+		url := format.RangerRestUrl
+		name := format.RangerService
+		if url != "" && name != "" {
+			cfg = fmt.Sprintf("%s?name=%s", url, name)
+		}
+	}
+	copy(toBuf(buf, count), cfg)
+	return int32(len(cfg))
 }
 
 //export jfs_close

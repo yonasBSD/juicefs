@@ -123,7 +123,7 @@ type engine interface {
 	// @trySync: try sync dir stat if broken or not existed
 	doGetDirStat(ctx Context, ino Ino, trySync bool) (*dirStat, syscall.Errno)
 	doSyncDirStat(ctx Context, ino Ino) (*dirStat, syscall.Errno)
-	doSyncUsedSpace(ctx Context) error
+	doSyncVolumeStat(ctx Context) error
 
 	scanTrashSlices(Context, trashSliceScan) error
 	scanPendingSlices(Context, pendingSliceScan) error
@@ -1918,6 +1918,9 @@ type metaWalkFunc func(ctx Context, inode Ino, p string, attr *Attr)
 
 func (m *baseMeta) walk(ctx Context, inode Ino, p string, attr *Attr, walkFn metaWalkFunc) syscall.Errno {
 	walkFn(ctx, inode, p, attr)
+	if attr.Full && attr.Typ != TypeDirectory {
+		return 0
+	}
 	var entries []*Entry
 	st := m.en.doReaddir(ctx, inode, 1, &entries, -1)
 	if st != 0 && st != syscall.ENOENT {
@@ -2116,7 +2119,7 @@ func (m *baseMeta) Check(ctx Context, fpath string, repair bool, recursive bool,
 	}
 	wg.Wait()
 	if fpath == "/" && repair && recursive && statAll {
-		if err := m.syncUsedSpace(ctx); err != nil {
+		if err := m.syncVolumeStat(ctx); err != nil {
 			logger.Errorf("Sync used space: %s", err)
 			hasError = true
 		}
@@ -2341,6 +2344,9 @@ func (m *baseMeta) Compact(ctx Context, inode Ino, concurrency int, preFunc, pos
 			for c := range chunkChan {
 				m.compactChunk(c.inode, c.indx, false, true)
 				postFunc()
+				if ctx.Canceled() {
+					return
+				}
 			}
 		}()
 	}
@@ -2353,11 +2359,12 @@ func (m *baseMeta) Compact(ctx Context, inode Ino, concurrency int, preFunc, pos
 		// calc chunk index in local
 		chunkCnt := uint32((fAttr.Length + ChunkSize - 1) / ChunkSize)
 		for i := uint32(0); i < chunkCnt; i++ {
-			if ctx.Canceled() {
+			select {
+			case <-ctx.Done():
 				return
+			case chunkChan <- cchunk{inode: fIno, indx: i}:
+				preFunc()
 			}
-			preFunc()
-			chunkChan <- cchunk{inode: fIno, indx: i}
 		}
 	})
 

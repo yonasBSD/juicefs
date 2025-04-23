@@ -207,7 +207,9 @@ public class JuiceFileSystemImpl extends FileSystem {
 
     int jfs_setfacl(long pid, long h, String path, int acltype, Pointer b, int len);
 
-    String jfs_getGroups(String volName, String user);
+    int jfs_getGroups(String volName, String user, Pointer buf, int len);
+
+    int jfs_ranger_cfg(String volName, Pointer buf, int size);
 
     void jfs_set_callback(LogCallBack callBack);
 
@@ -504,8 +506,9 @@ public class JuiceFileSystemImpl extends FileSystem {
 
 
     String rangerRestUrl = getConf(conf, "ranger-rest-url", null);
+    RangerConfig rangerConfig = checkAndGetRangerParams(conf);
     if (!isEmpty(rangerRestUrl) && !isSuperGroupFileSystem && !isBackGroundTask) {
-        RangerConfig rangerConfig = checkAndGetRangerParams(rangerRestUrl, conf);
+
         Configuration superConf = new Configuration(conf);
         superConf.set("juicefs.internal-bg-task", "true");
         superGroupFileSystem = new JuiceFileSystemImpl(true);
@@ -525,19 +528,40 @@ public class JuiceFileSystemImpl extends FileSystem {
     }
   }
 
-  private RangerConfig checkAndGetRangerParams(String rangerRestUrl, Configuration conf) throws IOException {
-    if (!rangerRestUrl.startsWith("http")) {
-      throw new IOException("illegal value for parameter 'juicefs.ranger-rest-url': " + rangerRestUrl);
+  private RangerConfig checkAndGetRangerParams(Configuration conf) throws IOException {
+    if (System.getenv("JUICEFS_RANGER_TEST") != null) {
+      RangerConfig config = new RangerConfig("http://localhost:6080", "ranger_test", 30000);
+      config.setImpl("io.juicefs.permission.RangerAdminClientImpl");
+      return config;
     }
-
-    String serviceName = getConf(conf, "ranger-service-name", "");
+    int size = 0, r = 1 << 10;
+    Pointer buf = null;
+    while (r > size) {
+      size = r;
+      buf = Memory.allocate(Runtime.getRuntime(lib), size);
+      r = lib.jfs_ranger_cfg(name, buf, size);
+    }
+    if (r == 0) {
+      return null;
+    }
+    byte[] rBuf = new byte[r];
+    buf.get(0, rBuf, 0, r);
+    String cfgStr = new String(rBuf);
+    // http://localhost:6080?name=service_name
+    String[] split = cfgStr.split("\\?", -1);
+    if (split.length != 2) {
+      throw new IOException(String.format("wrong ranger config: %s", cfgStr));
+    }
+    String url = split[0];
+    String serviceName = split[1].substring(5);
+    if (!url.startsWith("http")) {
+      throw new IOException("illegal value for parameter 'ranger-rest-url': " + url);
+    }
     if (serviceName.isEmpty()) {
-      throw new IOException("illegal value for parameter 'juicefs.ranger-service-name': " + serviceName);
+      throw new IOException("illegal value for parameter 'ranger-service': " + serviceName);
     }
-
     String pollIntervalMs = getConf(conf, "ranger-poll-interval-ms", "30000");
-
-    return new RangerConfig(rangerRestUrl, serviceName, Long.parseLong(pollIntervalMs));
+    return new RangerConfig(url, serviceName, Long.parseLong(pollIntervalMs));
   }
 
   private JuiceFileSystemImpl(boolean isSuperGroupFileSystem) {
@@ -549,14 +573,21 @@ public class JuiceFileSystemImpl extends FileSystem {
     if (isEmpty(groupsFile)) {
       return new HashSet<>(ugi.getGroups());
     }
-    String gStr = lib.jfs_getGroups(name, user);
-    Set<String> res;
-    if (!isEmpty(gStr)) {
-      res = new HashSet<>(Arrays.asList(gStr.split(","))) ;
-    } else {
-      res = new HashSet<>(ugi.getGroups());
+
+    int size = 0, r = 1 << 10;
+    Pointer buf = null;
+    while (r > size) {
+      size = r;
+      buf = Memory.allocate(Runtime.getRuntime(lib), size);
+      r = lib.jfs_getGroups(name, user, buf, size);
     }
-    return res;
+    if (r == 0) {
+      return new HashSet<>(ugi.getGroups());
+    }
+    byte[] rBuf = new byte[r];
+    buf.get(0, rBuf, 0, r);
+
+    return new HashSet<>(Arrays.asList(new String(rBuf).split(",")));
   }
 
   private boolean hasSuperPermission() {
